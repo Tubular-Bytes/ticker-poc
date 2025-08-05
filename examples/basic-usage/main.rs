@@ -1,6 +1,6 @@
-use ticker_poc::dagda::{self, Message, Status};
+use ticker_poc::dagda::controller::{self, Message, Status};
 use ticker_poc::model::Blueprint;
-use tracing::{info, error};
+use tracing::{error, info};
 use uuid::Uuid;
 
 #[tokio::main]
@@ -11,9 +11,9 @@ async fn main() -> Result<(), anyhow::Error> {
         .init();
 
     info!("Starting ticker-poc application");
-    
+
     let (tx, rx) = tokio::sync::mpsc::channel(32);
-    let mut dagda = dagda::Dagda::new(rx);
+    let mut dagda = controller::Dagda::new(rx);
 
     tokio::spawn(async move {
         if let Err(e) = dagda.run().await {
@@ -40,7 +40,7 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    
+
     let status = building_status(building_id, tx.clone()).await;
     info!("Building status: {:?}", status);
 
@@ -59,19 +59,29 @@ async fn main() -> Result<(), anyhow::Error> {
 
     tokio::time::sleep(std::time::Duration::from_secs(20)).await;
     info!("Stopping Dagda...");
-    tx.send(dagda::Message::Stop).await.unwrap();    Ok(())
+    tx.send(controller::Message::Stop).await.unwrap();
+    Ok(())
 }
 
 async fn dagda_status(tx: tokio::sync::mpsc::Sender<Message>) -> Result<Status, anyhow::Error> {
     let (status_tx, status_rx) = tokio::sync::oneshot::channel();
     tx.send(Message::Status(status_tx)).await?;
-    status_rx.await.map_err(|e| anyhow::anyhow!("Failed to receive status: {}", e))
+    status_rx
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to receive status: {}", e))
 }
 
-async fn building_status(building_id: Uuid, tx: tokio::sync::mpsc::Sender<Message>) -> Result<ticker_poc::dagda::BuildingStatus, anyhow::Error> {
+async fn building_status(
+    building_id: Uuid,
+    tx: tokio::sync::mpsc::Sender<Message>,
+) -> Result<controller::BuildingStatus, anyhow::Error> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send(Message::WorkerStatus(building_id, reply_tx)).await.unwrap();
-    reply_rx.await.map_err(|e| anyhow::anyhow!("Failed to receive building status: {}", e))
+    tx.send(Message::WorkerStatus(building_id, reply_tx))
+        .await
+        .unwrap();
+    reply_rx
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to receive building status: {}", e))
 }
 
 async fn add_building(tx: tokio::sync::mpsc::Sender<Message>) -> Result<Uuid, anyhow::Error> {
@@ -87,12 +97,18 @@ async fn add_building(tx: tokio::sync::mpsc::Sender<Message>) -> Result<Uuid, an
     Ok(building_id)
 }
 
-async fn pause_building(building_id: Uuid, tx: tokio::sync::mpsc::Sender<Message>) -> Result<(), anyhow::Error> {
+async fn pause_building(
+    building_id: Uuid,
+    tx: tokio::sync::mpsc::Sender<Message>,
+) -> Result<(), anyhow::Error> {
     tx.send(Message::WorkerPause(building_id)).await?;
     Ok(())
 }
 
-async fn resume_building(building_id: Uuid, tx: tokio::sync::mpsc::Sender<Message>) -> Result<(), anyhow::Error> {
+async fn resume_building(
+    building_id: Uuid,
+    tx: tokio::sync::mpsc::Sender<Message>,
+) -> Result<(), anyhow::Error> {
     tx.send(Message::WorkerResume(building_id)).await?;
     Ok(())
 }
