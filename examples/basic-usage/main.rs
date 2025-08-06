@@ -1,4 +1,5 @@
 use ticker_poc::dagda::controller::{self, Message, Status};
+use ticker_poc::dagda::shard;
 use ticker_poc::model::Blueprint;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -7,13 +8,12 @@ use uuid::Uuid;
 async fn main() -> Result<(), anyhow::Error> {
     // Initialize tracing subscriber for stdout
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     info!("Starting ticker-poc application");
 
-    let (tx, rx) = tokio::sync::mpsc::channel(32);
-    let mut dagda = controller::Dagda::new(rx);
+    let (mut dagda, tx) = controller::Dagda::with_channels(10);
 
     tokio::spawn(async move {
         if let Err(e) = dagda.run().await {
@@ -21,45 +21,43 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     });
 
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    info!("Dagda status: {:?}", dagda_status(tx.clone()).await);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let status = dagda_status(tx.clone()).await?;
+    info!("Dagda status: {:?}", status);
 
     let building_id = add_building(tx.clone()).await?;
-    info!("Building added with ID: {}", building_id);
+    start_building(building_id, tx.clone()).await?;
 
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    pause_building(building_id, tx.clone()).await?;
 
-    let status = building_status(building_id, tx.clone()).await;
-    info!("Building status: {:?}", status);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let status = building_status(building_id, tx.clone()).await?;
+    info!("Building {building_id} status: {:?}", status);
 
-    // Pause building for a while
-    if let Err(e) = pause_building(building_id, tx.clone()).await {
-        error!("Failed to pause building: {}", e);
-    } else {
-        info!("Building paused successfully");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    resume_building(building_id, tx.clone()).await?;
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let status = building_status(building_id, tx.clone()).await?;
+    info!("Building {building_id} status: {:?}", status);
+
+    loop {
+        match building_status(building_id, tx.clone()).await {
+            Ok(status) => {
+                if status == shard::Status::Completed {
+                    info!("Building {building_id} completed");
+                    break;
+                }
+            }
+            Err(e) => {
+                error!("Error getting building status: {}", e);
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    let status = building_status(building_id, tx.clone()).await;
-    info!("Building status: {:?}", status);
-
-    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-
-    if let Err(e) = resume_building(building_id, tx.clone()).await {
-        error!("Failed to resume building: {}", e);
-    } else {
-        info!("Building resumed successfully");
-    }
-
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    let status = building_status(building_id, tx.clone()).await;
-    info!("Building status: {:?}", status);
-
-    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-    info!("Stopping Dagda...");
-    tx.send(controller::Message::Stop).await.unwrap();
     Ok(())
 }
 
@@ -74,7 +72,7 @@ async fn dagda_status(tx: tokio::sync::mpsc::Sender<Message>) -> Result<Status, 
 async fn building_status(
     building_id: Uuid,
     tx: tokio::sync::mpsc::Sender<Message>,
-) -> Result<controller::BuildingStatus, anyhow::Error> {
+) -> Result<shard::Status, anyhow::Error> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     tx.send(Message::WorkerStatus(building_id, reply_tx))
         .await
@@ -86,15 +84,20 @@ async fn building_status(
 
 async fn add_building(tx: tokio::sync::mpsc::Sender<Message>) -> Result<Uuid, anyhow::Error> {
     // Send a test task
-    let blueprint = Blueprint {
-        id: "test-building-1".to_string(),
-        ticks: 6,
-    };
+    let blueprint = Blueprint::new("test-building-1".to_string(), 6);
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     tx.send(Message::Task(blueprint, reply_tx)).await.unwrap();
     let building_id = reply_rx.await.unwrap();
     info!("Building task started with ID: {}", building_id);
     Ok(building_id)
+}
+
+async fn start_building(
+    building_id: Uuid,
+    tx: tokio::sync::mpsc::Sender<Message>,
+) -> Result<(), anyhow::Error> {
+    tx.send(Message::WorkerStart(building_id)).await?;
+    Ok(())
 }
 
 async fn pause_building(

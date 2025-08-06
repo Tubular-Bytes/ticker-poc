@@ -1,0 +1,22 @@
+@startuml "High Level Architecture Diagram"
+
+actor "User" as user
+participant "API" as api
+participant "Controller" as dagda
+participant "Shard" as shard
+participant "Worker" as worker
+
+user -> api : Send request
+api -> dagda : Create task
+dagda -> shard : Query if shards have capacity
+shard -> dagda : Response with capacity
+dagda -> dagda : Select available shard or create new
+dagda -> shard : Assign task to shard
+shard -> worker : Dispatch task to worker
+worker -> worker : Execute task
+worker -> shard : Notify task completion
+shard -> dagda : Notify task completion
+dagda -> api : Return task result
+api -> user : Send response
+
+@enduml
