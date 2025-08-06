@@ -4,7 +4,7 @@ use tokio::sync::{broadcast, oneshot};
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-const TICK_RATE: u64 = 64;
+const TICK_RATE: u64 = 1;
 
 use crate::{
     dagda::shard::{self, Status as WorkerStatus},
@@ -21,6 +21,7 @@ pub enum Status {
 #[derive(Debug)]
 pub enum Message {
     Task(model::Blueprint, oneshot::Sender<Uuid>),
+    TaskWithParent(model::Blueprint, Uuid, oneshot::Sender<Uuid>),
     Status(oneshot::Sender<Status>),
     Stop,
 
@@ -29,11 +30,37 @@ pub enum Message {
     WorkerResume(Uuid),
     WorkerCancel(Uuid),
     WorkerStatus(Uuid, oneshot::Sender<WorkerStatus>),
+    WorkersByParent(Uuid, oneshot::Sender<Vec<WorkerInfo>>),
+
+    // New operations that check parent ownership
+    WorkerStartWithParent(Uuid, Uuid, oneshot::Sender<Result<(), String>>), // worker_id, parent_id, result
+    WorkerPauseWithParent(Uuid, Uuid, oneshot::Sender<Result<(), String>>),
+    WorkerResumeWithParent(Uuid, Uuid, oneshot::Sender<Result<(), String>>),
+    WorkerStopWithParent(Uuid, Uuid, oneshot::Sender<Result<(), String>>),
+}
+
+#[derive(Debug)]
+pub enum WorkerMessage {
+    Completed(Uuid),
+    Failed(Uuid, String),
+    Progress(Uuid, u64, u64), // worker_id, current_ticks, total_ticks
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkerInfo {
+    pub id: Uuid,
+    pub name: String,
+    pub status: WorkerStatus,
+    pub ticks: u64,
+    pub total_ticks: u64,
+    pub parent: Option<Uuid>,
 }
 
 pub struct Dagda {
     max_shard_capacity: u64,
-    pub bus: tokio::sync::mpsc::Receiver<Message>,
+    pub inbox: tokio::sync::mpsc::Receiver<Message>,
+    pub worker_inbox: tokio::sync::mpsc::Receiver<WorkerMessage>,
+    pub worker_sender: tokio::sync::mpsc::Sender<WorkerMessage>,
     pub broadcast: broadcast::Sender<Tick>,
     status: Status,
     _keep_alive: broadcast::Receiver<Tick>, // Keep at least one receiver alive
@@ -42,16 +69,28 @@ pub struct Dagda {
 }
 
 impl Dagda {
-    pub fn new(bus: tokio::sync::mpsc::Receiver<Message>, max_shard_capacity: u64) -> Self {
+    pub fn new(inbox: tokio::sync::mpsc::Receiver<Message>, max_shard_capacity: u64) -> Self {
         let (broadcast, keep_alive) = broadcast::channel(32);
+        let (worker_sender, worker_inbox) = tokio::sync::mpsc::channel(1000);
+
         Dagda {
             max_shard_capacity,
-            bus,
+            inbox,
+            worker_inbox,
+            worker_sender,
             broadcast,
             status: Status::Stopped,
             _keep_alive: keep_alive,
             shards: HashMap::new(),
         }
+    }
+
+    /// Creates a new Dagda controller with the necessary channels
+    /// Returns (Dagda instance, Message sender for external communication)
+    pub fn with_channels(max_shard_capacity: u64) -> (Self, tokio::sync::mpsc::Sender<Message>) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1000);
+        let dagda = Self::new(receiver, max_shard_capacity);
+        (dagda, sender)
     }
 
     pub fn stop(&mut self) {
@@ -67,7 +106,12 @@ impl Dagda {
     pub fn add_shard(&mut self) -> Uuid {
         let shard_id = Uuid::new_v4();
 
-        let shard = shard::Shard::spawn(shard_id, self.broadcast.clone(), self.max_shard_capacity);
+        let shard = shard::Shard::spawn(
+            shard_id,
+            self.broadcast.clone(),
+            self.worker_sender.clone(),
+            self.max_shard_capacity,
+        );
         self.shards.insert(shard_id, shard);
         shard_id
     }
@@ -94,6 +138,22 @@ impl Dagda {
             .map(|(_, shard)| shard)
     }
 
+    pub async fn lookup_worker_mut(&mut self, worker_id: Uuid) -> Option<&mut shard::Shard> {
+        self.shards
+            .iter_mut()
+            .find(|(_, shard)| shard.workers.lock().unwrap().contains_key(&worker_id))
+            .map(|(_, shard)| shard)
+    }
+
+    pub async fn worker_belongs_to_parent(&self, worker_id: Uuid, parent_id: Uuid) -> bool {
+        if let Some(shard) = self.lookup_worker(worker_id).await {
+            if let Some(worker) = shard.workers.lock().unwrap().get(&worker_id) {
+                return worker.parent() == Some(parent_id);
+            }
+        }
+        false
+    }
+
     pub async fn run(&mut self) -> Result<(), anyhow::Error> {
         self.status = Status::Running;
         let duration = self.interval();
@@ -117,7 +177,24 @@ impl Dagda {
                         0
                     });
                 }
-                Some(message) = self.bus.recv() => {
+                Some(worker_message) = self.worker_inbox.recv() => {
+                    match worker_message {
+                        WorkerMessage::Completed(worker_id) => {
+                            info!("Worker {} completed its task", worker_id);
+                            // Here you could add logic to handle worker completion
+                            // e.g., cleanup, notifications, etc.
+                        }
+                        WorkerMessage::Failed(worker_id, error) => {
+                            error!("Worker {} failed: {}", worker_id, error);
+                            // Handle worker failure
+                        }
+                        WorkerMessage::Progress(worker_id, current, total) => {
+                            debug!("Worker {} progress: {}/{}", worker_id, current, total);
+                            // Handle progress updates if needed
+                        }
+                    }
+                }
+                Some(message) = self.inbox.recv() => {
                     match message {
                         Message::Task(blueprint, sender) => {
                             let final_id: Uuid;
@@ -139,6 +216,52 @@ impl Dagda {
 
                             sender.send(final_id).unwrap_or_else(|e| {
                                 error!("Failed to send task response: {}", e);
+                            });
+                        },
+                        Message::TaskWithParent(blueprint, parent, sender) => {
+                            let final_id: Uuid;
+                            loop {
+                                let shard_id = self.pick_shard().await;
+                                if let Some(shard) = self.shards.get_mut(&shard_id) {
+                                    match shard.dispatch_with_parent(&blueprint, parent) {
+                                        Ok(worker_id) => {
+                                            final_id = worker_id;
+                                            info!("Dispatched task with parent {} to shard {} with worker ID {}", parent, shard_id, worker_id);
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to dispatch task to shard {}: {}", shard_id, e);
+                                        }
+                                    }
+                                }
+                            }
+
+                            sender.send(final_id).unwrap_or_else(|e| {
+                                error!("Failed to send task response: {}", e);
+                            });
+                        },
+                        Message::WorkersByParent(parent_id, sender) => {
+                            let mut workers_info = Vec::new();
+
+                            for shard in self.shards.values() {
+                                let workers = shard.workers.lock().unwrap();
+                                for worker in workers.values() {
+                                    if worker.parent() == Some(parent_id) {
+                                        let (current_ticks, total_ticks) = worker.progress();
+                                        workers_info.push(WorkerInfo {
+                                            id: worker.id(),
+                                            name: worker.blueprint().name.clone(),
+                                            status: worker.status(),
+                                            ticks: current_ticks,
+                                            total_ticks,
+                                            parent: worker.parent(),
+                                        });
+                                    }
+                                }
+                            }
+
+                            sender.send(workers_info).unwrap_or_else(|_| {
+                                error!("Failed to send workers by parent response");
                             });
                         },
                         Message::Status(sender) => {
@@ -222,6 +345,66 @@ impl Dagda {
                                 sender.send(WorkerStatus::Stopped).unwrap_or_else(|e| {
                                     error!("Failed to send worker status: {}", e);
                                 });
+                            }
+                        },
+                        Message::WorkerStartWithParent(worker_id, parent_id, sender) => {
+                            if !self.worker_belongs_to_parent(worker_id, parent_id).await {
+                                let _ = sender.send(Err("Worker not found or not owned by parent".to_string()));
+                            } else if let Some(shard) = self.lookup_worker_mut(worker_id).await {
+                                if let Some(worker) = shard.workers.lock().unwrap().get_mut(&worker_id) {
+                                    worker.start();
+                                    info!("Started worker {} for parent {}", worker_id, parent_id);
+                                    let _ = sender.send(Ok(()));
+                                } else {
+                                    let _ = sender.send(Err("Worker not found".to_string()));
+                                }
+                            } else {
+                                let _ = sender.send(Err("Shard not found".to_string()));
+                            }
+                        },
+                        Message::WorkerPauseWithParent(worker_id, parent_id, sender) => {
+                            if !self.worker_belongs_to_parent(worker_id, parent_id).await {
+                                let _ = sender.send(Err("Worker not found or not owned by parent".to_string()));
+                            } else if let Some(shard) = self.lookup_worker_mut(worker_id).await {
+                                if let Some(worker) = shard.workers.lock().unwrap().get_mut(&worker_id) {
+                                    worker.pause();
+                                    info!("Paused worker {} for parent {}", worker_id, parent_id);
+                                    let _ = sender.send(Ok(()));
+                                } else {
+                                    let _ = sender.send(Err("Worker not found".to_string()));
+                                }
+                            } else {
+                                let _ = sender.send(Err("Shard not found".to_string()));
+                            }
+                        },
+                        Message::WorkerResumeWithParent(worker_id, parent_id, sender) => {
+                            if !self.worker_belongs_to_parent(worker_id, parent_id).await {
+                                let _ = sender.send(Err("Worker not found or not owned by parent".to_string()));
+                            } else if let Some(shard) = self.lookup_worker_mut(worker_id).await {
+                                if let Some(worker) = shard.workers.lock().unwrap().get_mut(&worker_id) {
+                                    worker.resume();
+                                    info!("Resumed worker {} for parent {}", worker_id, parent_id);
+                                    let _ = sender.send(Ok(()));
+                                } else {
+                                    let _ = sender.send(Err("Worker not found".to_string()));
+                                }
+                            } else {
+                                let _ = sender.send(Err("Shard not found".to_string()));
+                            }
+                        },
+                        Message::WorkerStopWithParent(worker_id, parent_id, sender) => {
+                            if !self.worker_belongs_to_parent(worker_id, parent_id).await {
+                                let _ = sender.send(Err("Worker not found or not owned by parent".to_string()));
+                            } else if let Some(shard) = self.lookup_worker_mut(worker_id).await {
+                                if let Some(worker) = shard.workers.lock().unwrap().get_mut(&worker_id) {
+                                    worker.stop();
+                                    info!("Stopped worker {} for parent {}", worker_id, parent_id);
+                                    let _ = sender.send(Ok(()));
+                                } else {
+                                    let _ = sender.send(Err("Worker not found".to_string()));
+                                }
+                            } else {
+                                let _ = sender.send(Err("Shard not found".to_string()));
                             }
                         },
                     }

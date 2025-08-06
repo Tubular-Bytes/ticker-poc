@@ -4,9 +4,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::{dagda::controller::Tick, model};
+use crate::{
+    dagda::controller::{Tick, WorkerMessage},
+    model,
+};
 
 #[derive(Debug, Clone)]
 pub struct Worker {
@@ -14,16 +18,47 @@ pub struct Worker {
     blueprint: model::Blueprint,
     status: Status,
     ticks: u64,
+    parent: Option<Uuid>,
+    worker_sender: mpsc::Sender<WorkerMessage>,
 }
 
 impl Worker {
-    pub fn new(blueprint: model::Blueprint) -> Self {
+    pub fn new(blueprint: model::Blueprint, worker_sender: mpsc::Sender<WorkerMessage>) -> Self {
         Worker {
             id: Uuid::new_v4(),
             blueprint,
             status: Status::Idle,
             ticks: 0,
+            parent: None,
+            worker_sender,
         }
+    }
+
+    pub fn new_with_parent(
+        blueprint: model::Blueprint,
+        worker_sender: mpsc::Sender<WorkerMessage>,
+        parent: Uuid,
+    ) -> Self {
+        Worker {
+            id: Uuid::new_v4(),
+            blueprint,
+            status: Status::Idle,
+            ticks: 0,
+            parent: Some(parent),
+            worker_sender,
+        }
+    }
+
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+
+    pub fn parent(&self) -> Option<Uuid> {
+        self.parent
+    }
+
+    pub fn blueprint(&self) -> &model::Blueprint {
+        &self.blueprint
     }
 
     pub fn status(&self) -> Status {
@@ -32,6 +67,10 @@ impl Worker {
 
     pub fn ticks(&self) -> u64 {
         self.ticks
+    }
+
+    pub fn is_child(&self, parent_id: Uuid) -> bool {
+        self.parent == Some(parent_id)
     }
 
     pub fn progress(&self) -> (u64, u64) {
@@ -49,6 +88,17 @@ impl Worker {
         tracing::info!("Worker {} stopped", self.id);
     }
 
+    pub fn fail(&mut self, error: String) {
+        self.status = Status::Stopped;
+        self.ticks = 0;
+        tracing::error!("Worker {} failed: {}", self.id, error);
+
+        // Send failure message to Dagda
+        let _ = self
+            .worker_sender
+            .try_send(WorkerMessage::Failed(self.id, error));
+    }
+
     pub fn pause(&mut self) {
         self.status = Status::Paused;
         tracing::info!("Worker {} paused", self.id);
@@ -61,11 +111,36 @@ impl Worker {
 
     pub fn tick(&mut self) {
         if self.status == Status::InProgress {
-            self.ticks += 1;
-
+            // Check if we're already at the target before incrementing
             if self.ticks >= self.blueprint.ticks {
                 self.status = Status::Completed;
                 tracing::info!("Worker {} completed", self.id);
+
+                // Send completion message to Dagda
+                let _ = self
+                    .worker_sender
+                    .try_send(WorkerMessage::Completed(self.id));
+                return;
+            }
+
+            self.ticks += 1;
+
+            // Send progress update to Dagda
+            let _ = self.worker_sender.try_send(WorkerMessage::Progress(
+                self.id,
+                self.ticks,
+                self.blueprint.ticks,
+            ));
+
+            // Check if we just completed
+            if self.ticks >= self.blueprint.ticks {
+                self.status = Status::Completed;
+                tracing::info!("Worker {} completed", self.id);
+
+                // Send completion message to Dagda
+                let _ = self
+                    .worker_sender
+                    .try_send(WorkerMessage::Completed(self.id));
             } else {
                 tracing::debug!(
                     "Worker {} ticked: {}/{}",
@@ -111,12 +186,14 @@ pub struct Shard {
     pub workers: Arc<Mutex<HashMap<Uuid, Worker>>>,
     max_capacity: u64,
     register: Vec<Uuid>,
+    worker_sender: mpsc::Sender<WorkerMessage>,
 }
 
 impl Shard {
     pub fn spawn(
         id: Uuid,
         sender: tokio::sync::broadcast::Sender<Tick>,
+        worker_sender: mpsc::Sender<WorkerMessage>,
         max_capacity: u64,
     ) -> Self {
         let mut rx = sender.subscribe();
@@ -127,6 +204,7 @@ impl Shard {
             workers: workers.clone(),
             max_capacity,
             register: Vec::new(),
+            worker_sender: worker_sender.clone(),
         };
 
         let workers = s.workers.clone();
@@ -156,7 +234,24 @@ impl Shard {
             return Err("Shard capacity exceeded".into());
         }
 
-        let worker = Worker::new(blueprint.clone());
+        let worker = Worker::new(blueprint.clone(), self.worker_sender.clone());
+        let worker_id = worker.id;
+        self.workers.lock().unwrap().insert(worker.id, worker);
+        self.register.push(blueprint.id);
+
+        Ok(worker_id)
+    }
+
+    pub fn dispatch_with_parent(
+        &mut self,
+        blueprint: &model::Blueprint,
+        parent: Uuid,
+    ) -> Result<Uuid, String> {
+        if self.capacity() >= self.max_capacity {
+            return Err("Shard capacity exceeded".into());
+        }
+
+        let worker = Worker::new_with_parent(blueprint.clone(), self.worker_sender.clone(), parent);
         let worker_id = worker.id;
         self.workers.lock().unwrap().insert(worker.id, worker);
         self.register.push(blueprint.id);

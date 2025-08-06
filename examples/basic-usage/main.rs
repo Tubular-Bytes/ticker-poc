@@ -8,13 +8,12 @@ use uuid::Uuid;
 async fn main() -> Result<(), anyhow::Error> {
     // Initialize tracing subscriber for stdout
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     info!("Starting ticker-poc application");
 
-    let (tx, rx) = tokio::sync::mpsc::channel(32);
-    let mut dagda = controller::Dagda::new(rx, 10);
+    let (mut dagda, tx) = controller::Dagda::with_channels(10);
 
     tokio::spawn(async move {
         if let Err(e) = dagda.run().await {
@@ -85,7 +84,7 @@ async fn building_status(
 
 async fn add_building(tx: tokio::sync::mpsc::Sender<Message>) -> Result<Uuid, anyhow::Error> {
     // Send a test task
-    let blueprint = Blueprint::new("test-building-1".to_string(), 400);
+    let blueprint = Blueprint::new("test-building-1".to_string(), 6);
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     tx.send(Message::Task(blueprint, reply_tx)).await.unwrap();
     let building_id = reply_rx.await.unwrap();
