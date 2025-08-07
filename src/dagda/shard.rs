@@ -9,13 +9,13 @@ use uuid::Uuid;
 
 use crate::{
     dagda::controller::{Tick, WorkerMessage},
-    model,
+    library,
 };
 
 #[derive(Debug, Clone)]
 pub struct Worker {
     id: Uuid,
-    blueprint: model::Blueprint,
+    blueprint: library::Blueprint,
     status: Status,
     ticks: u64,
     parent: Option<Uuid>,
@@ -23,7 +23,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn new(blueprint: model::Blueprint, worker_sender: mpsc::Sender<WorkerMessage>) -> Self {
+    pub fn new(blueprint: library::Blueprint, worker_sender: mpsc::Sender<WorkerMessage>) -> Self {
         Worker {
             id: Uuid::new_v4(),
             blueprint,
@@ -35,7 +35,7 @@ impl Worker {
     }
 
     pub fn new_with_parent(
-        blueprint: model::Blueprint,
+        blueprint: library::Blueprint,
         worker_sender: mpsc::Sender<WorkerMessage>,
         parent: Uuid,
     ) -> Self {
@@ -57,7 +57,7 @@ impl Worker {
         self.parent
     }
 
-    pub fn blueprint(&self) -> &model::Blueprint {
+    pub fn blueprint(&self) -> &library::Blueprint {
         &self.blueprint
     }
 
@@ -74,7 +74,7 @@ impl Worker {
     }
 
     pub fn progress(&self) -> (u64, u64) {
-        (self.ticks, self.blueprint.ticks)
+        (self.ticks, self.blueprint.ticks())
     }
 
     pub fn start(&mut self) {
@@ -112,7 +112,7 @@ impl Worker {
     pub fn tick(&mut self) {
         if self.status == Status::InProgress {
             // Check if we're already at the target before incrementing
-            if self.ticks >= self.blueprint.ticks {
+            if self.ticks >= self.blueprint.ticks() {
                 self.status = Status::Completed;
                 tracing::info!("Worker {} completed", self.id);
 
@@ -129,11 +129,11 @@ impl Worker {
             let _ = self.worker_sender.try_send(WorkerMessage::Progress(
                 self.id,
                 self.ticks,
-                self.blueprint.ticks,
+                self.blueprint.ticks(),
             ));
 
             // Check if we just completed
-            if self.ticks >= self.blueprint.ticks {
+            if self.ticks >= self.blueprint.ticks() {
                 self.status = Status::Completed;
                 tracing::info!("Worker {} completed", self.id);
 
@@ -146,7 +146,7 @@ impl Worker {
                     "Worker {} ticked: {}/{}",
                     self.id,
                     self.ticks,
-                    self.blueprint.ticks
+                    self.blueprint.ticks()
                 );
             }
         } else if self.status != Status::Completed {
@@ -229,7 +229,7 @@ impl Shard {
         self.register.len() as u64
     }
 
-    pub fn dispatch(&mut self, blueprint: &model::Blueprint) -> Result<Uuid, String> {
+    pub fn dispatch(&mut self, blueprint: &library::Blueprint) -> Result<Uuid, String> {
         if self.capacity() >= self.max_capacity {
             return Err("Shard capacity exceeded".into());
         }
@@ -237,14 +237,14 @@ impl Shard {
         let worker = Worker::new(blueprint.clone(), self.worker_sender.clone());
         let worker_id = worker.id;
         self.workers.lock().unwrap().insert(worker.id, worker);
-        self.register.push(blueprint.slug.clone());
+        self.register.push(blueprint.slug().clone());
 
         Ok(worker_id)
     }
 
     pub fn dispatch_with_parent(
         &mut self,
-        blueprint: &model::Blueprint,
+        blueprint: &library::Blueprint,
         parent: Uuid,
     ) -> Result<Uuid, String> {
         if self.capacity() >= self.max_capacity {
@@ -254,7 +254,7 @@ impl Shard {
         let worker = Worker::new_with_parent(blueprint.clone(), self.worker_sender.clone(), parent);
         let worker_id = worker.id;
         self.workers.lock().unwrap().insert(worker.id, worker);
-        self.register.push(blueprint.slug.clone());
+        self.register.push(blueprint.slug().clone());
 
         Ok(worker_id)
     }

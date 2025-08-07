@@ -8,7 +8,7 @@ const TICK_RATE: u64 = 1;
 
 use crate::{
     dagda::shard::{self, Status as WorkerStatus},
-    model,
+    library,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -20,8 +20,8 @@ pub enum Status {
 
 #[derive(Debug)]
 pub enum Message {
-    Task(model::Blueprint, oneshot::Sender<Uuid>),
-    TaskWithParent(model::Blueprint, Uuid, oneshot::Sender<Uuid>),
+    Task(library::Blueprint, oneshot::Sender<Uuid>),
+    TaskWithParent(library::Blueprint, Uuid, oneshot::Sender<Uuid>),
     Status(oneshot::Sender<Status>),
     Stop,
 
@@ -250,7 +250,7 @@ impl Dagda {
                                         let (current_ticks, total_ticks) = worker.progress();
                                         workers_info.push(WorkerInfo {
                                             id: worker.id(),
-                                            name: worker.blueprint().name.clone(),
+                                            name: worker.blueprint().slug().clone(),
                                             status: worker.status(),
                                             ticks: current_ticks,
                                             total_ticks,
@@ -447,7 +447,7 @@ impl Default for Tick {
 
 #[cfg(test)]
 mod tests {
-    use crate::model::Blueprint;
+    use crate::library::{Blueprint, Building};
 
     use super::*;
 
@@ -481,10 +481,17 @@ mod tests {
         let shard_id_1 = dagda.add_shard();
         let shard_id_2 = dagda.add_shard();
 
+        let blueprint = Blueprint::Building(Building {
+            slug: "test-building-1".to_string(),
+            name: "Test Building 1".to_string(),
+            version: "v1.0.0".into(),
+            ticks: 6,
+            cost: HashMap::new(),
+            attributes: HashMap::new(),
+        });
+
         let shard_1 = dagda.shards.get_mut(&shard_id_1).unwrap();
-        shard_1
-            .dispatch(&Blueprint::new("test-building-1".to_string(), "test-building-1".to_string(), 6, HashMap::new()))
-            .unwrap();
+        shard_1.dispatch(&blueprint).unwrap();
 
         let picked_shard_id = dagda.pick_shard().await;
         assert!(picked_shard_id == shard_id_2);
@@ -496,15 +503,28 @@ mod tests {
         let shard_id_1 = dagda.add_shard();
         let shard_id_2 = dagda.add_shard();
 
+        let blueprint_1 = Blueprint::Building(Building {
+            slug: "test-building-1".to_string(),
+            name: "Test Building 1".to_string(),
+            version: "v1.0.0".into(),
+            ticks: 6,
+            cost: HashMap::new(),
+            attributes: HashMap::new(),
+        });
+        let blueprint_2 = Blueprint::Building(Building {
+            slug: "test-building-2".to_string(),
+            name: "Test Building 2".to_string(),
+            version: "v1.0.0".into(),
+            ticks: 6,
+            cost: HashMap::new(),
+            attributes: HashMap::new(),
+        });
+
         let shard_1 = dagda.shards.get_mut(&shard_id_1).unwrap();
-        shard_1
-            .dispatch(&Blueprint::new("test-building-1".to_string(), "test-building-1".to_string(), 6, HashMap::new()))
-            .unwrap();
+        shard_1.dispatch(&blueprint_1).unwrap();
 
         let shard_2 = dagda.shards.get_mut(&shard_id_2).unwrap();
-        shard_2
-            .dispatch(&Blueprint::new("test-building-2".to_string(), "test-building-2".to_string(), 6, HashMap::new()))
-            .unwrap();
+        shard_2.dispatch(&blueprint_2).unwrap();
 
         let picked_shard_id = dagda.pick_shard().await;
         assert!(picked_shard_id != shard_id_1 && picked_shard_id != shard_id_2);

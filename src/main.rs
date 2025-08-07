@@ -10,10 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use ticker_poc::{
-    dagda::controller::{Dagda, Message, Status as DagdaStatus},
-    model::Blueprint,
-};
+use ticker_poc::dagda::controller::{Dagda, Message, Status as DagdaStatus};
 
 // Request/Response types for the API
 #[derive(Serialize)]
@@ -58,7 +55,7 @@ struct ErrorResponse {
 #[derive(Clone)]
 struct AppState {
     dagda_sender: mpsc::Sender<Message>,
-    blueprints: ticker_poc::library::BlueprintCollection,
+    blueprints: ticker_poc::library::Collection,
 }
 
 #[tokio::main]
@@ -72,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create Dagda controller with channels
     let (mut dagda, dagda_sender) = Dagda::with_channels(10); // max 10 workers per shard
-    let blueprints = ticker_poc::library::BlueprintCollection::load()?;
+    let blueprints = ticker_poc::library::Collection::load()?;
 
     // Spawn Dagda controller in background task
     tokio::spawn(async move {
@@ -82,7 +79,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create application state
-    let state = AppState { dagda_sender, blueprints };
+    let state = AppState {
+        dagda_sender,
+        blueprints,
+    };
 
     // Build the router
     let app = Router::new()
@@ -266,20 +266,15 @@ async fn create_task(
         ));
     }
 
-    let blueprint_ref = state
-        .blueprints
-        .blueprints()
-        .get(&name)
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Blueprint '{}' not found", name),
-                }),
-            )
-        })?;
+    let blueprint = state.blueprints.get_blueprint(&name).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Blueprint '{}' not found", name),
+            }),
+        )
+    })?;
 
-    let blueprint = Blueprint::from(blueprint_ref.clone());
     let (sender, receiver) = oneshot::channel();
 
     if state

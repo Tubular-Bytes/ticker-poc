@@ -7,9 +7,9 @@ async fn main() -> Result<(), anyhow::Error> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let blueprints = library::BlueprintCollection::load()?;
+    let blueprints = library::Collection::load()?;
 
-    let keys = blueprints.blueprints().keys().collect::<Vec<_>>();
+    let keys = blueprints.keys();
     info!(?keys, "Loaded blueprints");
 
     Ok(())
