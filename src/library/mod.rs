@@ -93,18 +93,25 @@ impl Collection {
             if let Some(dir) = entry.as_dir() {
                 let kind = match dir.path().file_name().unwrap_or_default().to_str() {
                     Some("") => {
-                        println!("Skipping empty directory: {:?}", dir.path());
+                        tracing::warn!(
+                            path = format!("{:?}", dir.path()),
+                            "skipping empty directory"
+                        );
                         continue;
                     }
                     Some(kind) => kind,
                     None => {
-                        println!("Skipping empty directory: {:?}", dir.path());
+                        tracing::warn!(
+                            path = format!("{:?}", dir.path()),
+                            "skipping empty directory"
+                        );
                         continue;
                     }
                 };
                 for file in dir.files() {
                     if file.path().extension().and_then(|s| s.to_str()) == Some("json") {
-                        println!("Loading blueprint from file: {}", file.path().display());
+                        let display_name = file.path().display();
+                        tracing::debug!(file = format!("{display_name}"), "loading blueprint");
                         let result = match kind {
                             "building" => {
                                 let json = file.contents_utf8().unwrap_or_default();
@@ -112,12 +119,10 @@ impl Collection {
                                 building
                             }
                             _ => {
-                                println!("Unsupported blueprint kind: {}", kind);
+                                tracing::error!(kind, "unsupported blueprint kind");
                                 continue;
                             }
                         };
-
-                        println!("{}", result.slug);
 
                         collection
                             .blueprints
@@ -128,8 +133,6 @@ impl Collection {
                 continue;
             }
         }
-
-        println!("{:?}", collection.blueprints.keys());
 
         Ok(collection)
     }

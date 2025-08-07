@@ -1,11 +1,11 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::Json,
     routing::{get, post, put},
     Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -39,11 +39,6 @@ struct ProgressInfo {
 struct TaskCreatedResponse {
     worker_id: Uuid,
     message: String,
-}
-
-#[derive(Deserialize)]
-struct CreateTaskQuery {
-    ticks: u64,
 }
 
 #[derive(Serialize)]
@@ -87,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the router
     let app = Router::new()
         .route("/system/status", get(get_system_status))
-        .route("/inventory", get(get_inventory))
+        .route("/inventory/status", get(get_inventory))
         .route("/inventory/:name", post(create_task))
         .route("/inventory/:worker_id/start", put(start_worker))
         .route("/inventory/:worker_id/pause", put(pause_worker))
@@ -252,19 +247,9 @@ async fn get_inventory(
 async fn create_task(
     headers: HeaderMap,
     Path(name): Path<String>,
-    Query(params): Query<CreateTaskQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<TaskCreatedResponse>, (StatusCode, Json<ErrorResponse>)> {
     let parent_id = extract_auth_uuid(&headers)?;
-
-    if params.ticks == 0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Ticks must be greater than 0".to_string(),
-            }),
-        ));
-    }
 
     let blueprint = state.blueprints.get_blueprint(&name).ok_or_else(|| {
         (
