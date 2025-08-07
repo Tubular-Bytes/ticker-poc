@@ -58,6 +58,7 @@ struct ErrorResponse {
 #[derive(Clone)]
 struct AppState {
     dagda_sender: mpsc::Sender<Message>,
+    blueprints: ticker_poc::library::BlueprintCollection,
 }
 
 #[tokio::main]
@@ -71,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create Dagda controller with channels
     let (mut dagda, dagda_sender) = Dagda::with_channels(10); // max 10 workers per shard
+    let blueprints = ticker_poc::library::BlueprintCollection::load()?;
 
     // Spawn Dagda controller in background task
     tokio::spawn(async move {
@@ -80,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create application state
-    let state = AppState { dagda_sender };
+    let state = AppState { dagda_sender, blueprints };
 
     // Build the router
     let app = Router::new()

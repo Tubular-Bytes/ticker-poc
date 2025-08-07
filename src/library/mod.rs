@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Debug};
 
+use dyn_clone::DynClone;
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
 
@@ -40,13 +41,16 @@ impl Blueprint for Building {
     }
 }
 
-pub trait Blueprint {
+pub trait Blueprint: Debug + DynClone + Send + Sync {
     fn name(&self) -> &str;
     fn slug(&self) -> &str;
     fn ticks(&self) -> u64;
     fn cost(&self) -> &HashMap<String, ResourceValue>;
 }
 
+dyn_clone::clone_trait_object!(Blueprint);
+
+#[derive(Debug, Clone)]
 pub struct BlueprintCollection {
     blueprints: HashMap<String, Box<dyn Blueprint>>,
 }
