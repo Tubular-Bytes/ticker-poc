@@ -1,19 +1,16 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::Json,
     routing::{get, post, put},
     Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use ticker_poc::{
-    dagda::controller::{Dagda, Message, Status as DagdaStatus},
-    model::Blueprint,
-};
+use ticker_poc::dagda::controller::{Dagda, Message, Status as DagdaStatus};
 
 // Request/Response types for the API
 #[derive(Serialize)]
@@ -44,11 +41,6 @@ struct TaskCreatedResponse {
     message: String,
 }
 
-#[derive(Deserialize)]
-struct CreateTaskQuery {
-    ticks: u64,
-}
-
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
@@ -58,6 +50,7 @@ struct ErrorResponse {
 #[derive(Clone)]
 struct AppState {
     dagda_sender: mpsc::Sender<Message>,
+    blueprints: ticker_poc::library::Collection,
 }
 
 #[tokio::main]
@@ -71,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create Dagda controller with channels
     let (mut dagda, dagda_sender) = Dagda::with_channels(10); // max 10 workers per shard
+    let blueprints = ticker_poc::library::Collection::load()?;
 
     // Spawn Dagda controller in background task
     tokio::spawn(async move {
@@ -80,12 +74,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create application state
-    let state = AppState { dagda_sender };
+    let state = AppState {
+        dagda_sender,
+        blueprints,
+    };
 
     // Build the router
     let app = Router::new()
         .route("/system/status", get(get_system_status))
-        .route("/inventory", get(get_inventory))
+        .route("/inventory/status", get(get_inventory))
         .route("/inventory/:name", post(create_task))
         .route("/inventory/:worker_id/start", put(start_worker))
         .route("/inventory/:worker_id/pause", put(pause_worker))
@@ -250,21 +247,19 @@ async fn get_inventory(
 async fn create_task(
     headers: HeaderMap,
     Path(name): Path<String>,
-    Query(params): Query<CreateTaskQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<TaskCreatedResponse>, (StatusCode, Json<ErrorResponse>)> {
     let parent_id = extract_auth_uuid(&headers)?;
 
-    if params.ticks == 0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
+    let blueprint = state.blueprints.get_blueprint(&name).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: "Ticks must be greater than 0".to_string(),
+                error: format!("Blueprint '{}' not found", name),
             }),
-        ));
-    }
+        )
+    })?;
 
-    let blueprint = Blueprint::new(name.clone(), params.ticks);
     let (sender, receiver) = oneshot::channel();
 
     if state

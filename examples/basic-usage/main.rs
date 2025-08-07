@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use ticker_poc::dagda::controller::{self, Message, Status};
 use ticker_poc::dagda::shard;
-use ticker_poc::model::Blueprint;
+use ticker_poc::library::{Blueprint, Building};
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -84,7 +86,15 @@ async fn building_status(
 
 async fn add_building(tx: tokio::sync::mpsc::Sender<Message>) -> Result<Uuid, anyhow::Error> {
     // Send a test task
-    let blueprint = Blueprint::new("test-building-1".to_string(), 6);
+    let blueprint = Blueprint::Building(Building {
+        slug: "test-building-1".to_string(),
+        name: "Test Building 1".to_string(),
+        version: "v1.0.0".into(),
+        ticks: 6,
+        cost: HashMap::new(),
+        attributes: HashMap::new(),
+    });
+
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     tx.send(Message::Task(blueprint, reply_tx)).await.unwrap();
     let building_id = reply_rx.await.unwrap();

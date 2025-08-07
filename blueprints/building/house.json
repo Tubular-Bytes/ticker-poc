@@ -1,0 +1,14 @@
+{
+    "name": "House",
+    "slug": "house",
+    "version": "0.1.0",
+    "ticks": 6,
+    "cost": {
+        "wood": {
+            "name": "Wood",
+            "slug": "wood",
+            "value": 100,
+            "temporary": false
+        }
+    }
+}
