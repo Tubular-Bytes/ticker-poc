@@ -4,20 +4,15 @@ use dyn_clone::DynClone;
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
 
-pub static PROJECT_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/blueprints");
+use crate::model::ResourceValue;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceValue {
-    pub name: String,
-    pub slug: String,
-    pub value: u64,
-    pub temporary: bool,
-}
+pub static PROJECT_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/blueprints");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Building {
     name: String,
     slug: String,
+    version: String,
     ticks: u64,
     cost: HashMap<String, ResourceValue>,
     // attributes: HashMap<String, String>,
@@ -39,11 +34,16 @@ impl Blueprint for Building {
     fn cost(&self) -> &HashMap<String, ResourceValue> {
         &self.cost
     }
+
+    fn version(&self) -> &str {
+        &self.version
+    }
 }
 
 pub trait Blueprint: Debug + DynClone + Send + Sync {
     fn name(&self) -> &str;
     fn slug(&self) -> &str;
+    fn version(&self) -> &str;
     fn ticks(&self) -> u64;
     fn cost(&self) -> &HashMap<String, ResourceValue>;
 }

@@ -266,7 +266,20 @@ async fn create_task(
         ));
     }
 
-    let blueprint = Blueprint::new(name.clone(), params.ticks);
+    let blueprint_ref = state
+        .blueprints
+        .blueprints()
+        .get(&name)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Blueprint '{}' not found", name),
+                }),
+            )
+        })?;
+
+    let blueprint = Blueprint::from(blueprint_ref.clone());
     let (sender, receiver) = oneshot::channel();
 
     if state

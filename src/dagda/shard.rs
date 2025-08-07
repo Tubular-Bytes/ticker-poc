@@ -185,7 +185,7 @@ pub struct Shard {
     pub id: Uuid,
     pub workers: Arc<Mutex<HashMap<Uuid, Worker>>>,
     max_capacity: u64,
-    register: Vec<Uuid>,
+    register: Vec<String>,
     worker_sender: mpsc::Sender<WorkerMessage>,
 }
 
@@ -237,7 +237,7 @@ impl Shard {
         let worker = Worker::new(blueprint.clone(), self.worker_sender.clone());
         let worker_id = worker.id;
         self.workers.lock().unwrap().insert(worker.id, worker);
-        self.register.push(blueprint.id);
+        self.register.push(blueprint.slug.clone());
 
         Ok(worker_id)
     }
@@ -254,7 +254,7 @@ impl Shard {
         let worker = Worker::new_with_parent(blueprint.clone(), self.worker_sender.clone(), parent);
         let worker_id = worker.id;
         self.workers.lock().unwrap().insert(worker.id, worker);
-        self.register.push(blueprint.id);
+        self.register.push(blueprint.slug.clone());
 
         Ok(worker_id)
     }

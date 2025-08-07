@@ -483,7 +483,7 @@ mod tests {
 
         let shard_1 = dagda.shards.get_mut(&shard_id_1).unwrap();
         shard_1
-            .dispatch(&Blueprint::new("test-building-1".to_string(), 6))
+            .dispatch(&Blueprint::new("test-building-1".to_string(), "test-building-1".to_string(), 6, HashMap::new()))
             .unwrap();
 
         let picked_shard_id = dagda.pick_shard().await;
@@ -498,12 +498,12 @@ mod tests {
 
         let shard_1 = dagda.shards.get_mut(&shard_id_1).unwrap();
         shard_1
-            .dispatch(&Blueprint::new("test-building-1".to_string(), 6))
+            .dispatch(&Blueprint::new("test-building-1".to_string(), "test-building-1".to_string(), 6, HashMap::new()))
             .unwrap();
 
         let shard_2 = dagda.shards.get_mut(&shard_id_2).unwrap();
         shard_2
-            .dispatch(&Blueprint::new("test-building-1".to_string(), 6))
+            .dispatch(&Blueprint::new("test-building-2".to_string(), "test-building-2".to_string(), 6, HashMap::new()))
             .unwrap();
 
         let picked_shard_id = dagda.pick_shard().await;
