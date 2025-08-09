@@ -1,0 +1,14 @@
+{
+    "name": "Woodworker",
+    "slug": "woodworker",
+    "version": "0.1.0",
+    "ticks": 4,
+    "cost": {
+        "wood": {
+            "name": "Wood",
+            "slug": "wood",
+            "value": 50,
+            "temporary": false
+        }
+    }
+}

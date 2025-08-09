@@ -1,7 +1,8 @@
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    response::Json,
+    middleware,
+    response::{Json, Response},
     routing::{get, post, put},
     Router,
 };
@@ -11,6 +12,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use ticker_poc::dagda::controller::{Dagda, Message, Status as DagdaStatus};
+use ticker_poc::metrics::Metrics;
 
 // Request/Response types for the API
 #[derive(Serialize)]
@@ -62,6 +64,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting Ticker PoC server...");
 
+    // Initialize metrics
+    Metrics::init()?;
+    info!("Metrics initialized successfully");
+
+    // Start system metrics updater task
+    tokio::spawn(ticker_poc::metrics::start_system_metrics_updater());
+
     // Create Dagda controller with channels
     let (mut dagda, dagda_sender) = Dagda::with_channels(10); // max 10 workers per shard
     let blueprints = ticker_poc::library::Collection::load()?;
@@ -83,17 +92,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/system/status", get(get_system_status))
         .route("/inventory/status", get(get_inventory))
-        .route("/inventory/:name", post(create_task))
-        .route("/inventory/:worker_id/start", put(start_worker))
-        .route("/inventory/:worker_id/pause", put(pause_worker))
-        .route("/inventory/:worker_id/resume", put(resume_worker))
-        .route("/inventory/:worker_id/stop", put(stop_worker))
+        .route("/inventory/{name}", post(create_task))
+        .route("/inventory/{worker_id}/start", put(start_worker))
+        .route("/inventory/{worker_id}/pause", put(pause_worker))
+        .route("/inventory/{worker_id}/resume", put(resume_worker))
+        .route("/inventory/{worker_id}/stop", put(stop_worker))
+        .route("/metrics", get(get_metrics))
+        .layer(middleware::from_fn(ticker_poc::middleware::metrics_middleware))
         .with_state(state);
 
-    info!("Server starting on http://0.0.0.0:3000");
+    info!("Server starting on http://0.0.0.0:3001");
 
     // Start the server
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await?;
     axum::serve(listener, app).await?;
 
     Ok(())
@@ -488,6 +499,35 @@ async fn stop_worker(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "Internal server error".to_string(),
+                }),
+            ))
+        }
+    }
+}
+
+// GET /metrics - Prometheus metrics endpoint
+async fn get_metrics() -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    match Metrics::global().export() {
+        Ok(metrics) => {
+            let response = Response::builder()
+                .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+                .body(axum::body::Body::from(metrics))
+                .map_err(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "Failed to build response".to_string(),
+                        }),
+                    )
+                })?;
+            Ok(response)
+        }
+        Err(e) => {
+            error!("Failed to export metrics: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to export metrics".to_string(),
                 }),
             ))
         }

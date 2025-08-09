@@ -2,7 +2,7 @@
     "name": "House",
     "slug": "house",
     "version": "0.1.0",
-    "ticks": 6,
+    "ticks": 30,
     "cost": {
         "wood": {
             "name": "Wood",
