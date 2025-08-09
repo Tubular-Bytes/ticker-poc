@@ -1,0 +1,28 @@
+{
+    "name": "Create Plank",
+    "id": "create-plank",
+    "description": "Converts wood into planks.",
+    "input": [
+        {
+            "id": "wood",
+            "amount": 1
+        }
+    ],
+    "output": [
+        {
+            "id": "plank",
+            "amount": 1
+        }
+    ],
+    "workers": [
+        {
+            "class": "worker",
+            "modifier": 1.5
+        },
+        {
+            "class": "woodworker",
+            "modifier": 1.0
+        }
+    ],    
+    "base_ticks": 5
+}
